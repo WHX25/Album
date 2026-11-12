@@ -3,91 +3,63 @@
 #include "const.h"
 #include <QDir>
 
-OpenTreeThread::OpenTreeThread(const QString &src_path, int file_count, QTreeWidget *self, QObject *parent)
-    :QThread(parent),_src_path(src_path),_file_count(file_count),_self(self),_root(nullptr),_bstop(false)
+OpenTreeThread::OpenTreeThread(const QString &src_path,QObject *parent)
+    :QThread(parent),_src_path(src_path)
 {
-
-}
-
-void OpenTreeThread::OpenProTree(const QString &src_path, int &file_count, QTreeWidget *self)
-{
-    QDir src_dir(src_path);
-    auto name = src_dir.dirName();
-    auto * item = new ProTreeItem(self,name,src_path,TreeItemPro);
-    item->setData(0,Qt::DisplayRole,name);
-    item->setData(0,Qt::DecorationRole,QIcon(":/icon/dir.png"));
-    item->setData(0,Qt::ToolTipRole,src_path);
-    _root = item;
-    RecursiveProTree(src_path,file_count,self,_root,item,nullptr);
+    qRegisterMetaType<QVector<ImportEntry>>("QVector<ImportEntry>");
 }
 
 void OpenTreeThread::run()
 {
-    OpenProTree(_src_path,_file_count,_self);
-    if(_bstop){
-        auto path = dynamic_cast<ProTreeItem*>(_root)->GetPath();
-        auto index = _self->indexOfTopLevelItem(_root);
-        delete _self->takeTopLevelItem(index);
-        QDir dir(path);
-        dir.removeRecursively();
+    _entries.clear();
+    _file_count = 0;
+    RecursiveProTree(_src_path,QString());
+
+    if(isInterruptionRequested()){
+        emit SigOpenCanceled();
         return;
     }
 
-    emit SigFinishProgress(_file_count);
+    emit SigOpenReady(_entries);
 }
 
-void OpenTreeThread::RecursiveProTree(const QString &src_path, int &file_count, QTreeWidget *self,
-                                      QTreeWidgetItem *root, QTreeWidgetItem *parent, QTreeWidgetItem *preitem)
+void OpenTreeThread::RecursiveProTree(const QString &src_path, const QString &relative_parent_path)
 {
+    if(isInterruptionRequested()){
+        return;
+    }
+
     QDir src_dir(src_path);
     src_dir.setFilter(QDir::Dirs|QDir::Files|QDir::NoDotAndDotDot);
     src_dir.setSorting(QDir::Name | QDir::DirsFirst);
-    QFileInfoList file_info = src_dir.entryInfoList();
-    for(int i=0;i<file_info.size();i++){
-        if(_bstop){
+    const QFileInfoList entries = src_dir.entryInfoList();
+    for(const QFileInfo &fileInfo : entries){
+        if(isInterruptionRequested()){
             return;
         }
-        QFileInfo fileInfo = file_info.at(i);
-        bool bIsDir = fileInfo.isDir();
-        if(bIsDir){
-            if(_bstop){
-                return;
-            }
-            file_count ++;
-            emit SigUpdateProgress(file_count);
-            auto * item = new ProTreeItem(parent,fileInfo.fileName(),fileInfo.absoluteFilePath(),
-                                          _root,TreeItemDir);
-            item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            item->setData(0,Qt::DecorationRole,QIcon(":/icon/dir.png"));
-            item->setData(0,Qt::ToolTipRole,fileInfo.absoluteFilePath());
-            RecursiveProTree(fileInfo.absoluteFilePath(),file_count,self,root,item,preitem);
-        }else{
-            if(_bstop){
-                return;
-            }
-            const QString& suffix = fileInfo.completeSuffix();
-            if(suffix != "png" && suffix != "jpg" && suffix != "jpeg"){
-                continue;
-            }
+        const QString name = fileInfo.fileName();
+        QString relativePath = relative_parent_path.isEmpty()?name:QDir(relative_parent_path).filePath(name);
+        relativePath = QDir::fromNativeSeparators(QDir::cleanPath(relativePath));
+        const QString targetPath = fileInfo.absoluteFilePath();
 
-            auto* item = new ProTreeItem(parent,fileInfo.fileName(),fileInfo.absoluteFilePath(),
-                                         _root,TreeItemPic);
-            item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            item->setData(0,Qt::DecorationRole,QIcon(":/icon/pic.png"));
-            item->setData(0,Qt::ToolTipRole,fileInfo.absoluteFilePath());
+        if(fileInfo.isDir()){
+            _entries.append({relativePath,name,targetPath,TreeItemDir});
+            emit SigUpdateProgress(++_file_count);
 
-            if(preitem){
-                auto * pre_proitem = dynamic_cast<ProTreeItem*>(preitem);
-                pre_proitem->SetNextItem(item);
-            }
-            item->SetPreItem(preitem);
-            preitem = item;
+            RecursiveProTree(targetPath,relativePath);
+            continue;
         }
+
+        const QString suffix = fileInfo.suffix().toLower();
+        if(suffix != "png" && suffix != "jpg" && suffix != "jpeg"){
+            continue;
+        }
+        _entries.append({relativePath,name,targetPath,TreeItemPic});
+        emit SigUpdateProgress(++_file_count);
     }
-    emit SigFinishProgress(file_count);
 }
 
 void OpenTreeThread::SlotCancelProgress()
 {
-    this->_bstop = true;
+    requestInterruption();
 }

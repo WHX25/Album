@@ -3,138 +3,114 @@
 #include "const.h"
 #include "protreeitem.h"
 
-ProTreeThread::ProTreeThread(const QString &src_path, const QString &dist_path,
-                             QTreeWidgetItem *parent_item, int &file_count,
-                             QTreeWidget *self, QTreeWidgetItem *root, QObject *parent)
-    :QThread(parent),_src_path(src_path),_dist_path(dist_path),_parent_item(parent_item),
-    _file_count(file_count),_self(self),_root(root),_bstop(false)
+ProTreeThread::ProTreeThread(const QString &src_path, const QString &dist_path,QObject *parent)
+    :QThread(parent),_src_path(src_path),_dist_path(dist_path)
 {
-
+    qRegisterMetaType<QVector<ImportEntry>>("QVector<ImportEntry>");
 }
 
-void ProTreeThread::CreateProTree(const QString &src_path, const QString &dist_path,
-                                  QTreeWidgetItem *parent_item, int &file_count,
-                                  QTreeWidget *self, QTreeWidgetItem *root, QTreeWidgetItem *preItem)
+void ProTreeThread::CreateProTree(const QString &src_path, const QString &dist_path,const QString &relativeParentPath)
 {
-    if(_bstop){
+    if(isInterruptionRequested()){
         return;
     }
-    bool needcopy = true;
-    if(src_path == dist_path){
-        needcopy = false;
-    }
+    QDir sourceDir(src_path);
+    sourceDir.setFilter(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+    sourceDir.setSorting(QDir::Name | QDir::DirsFirst);
 
-    QDir import_dir(src_path);
-    qDebug() << "src_path is " << src_path << "dis_path is " << dist_path << Qt::endl;
-    //设置文件过滤器
-    QStringList nameFilters;
-    import_dir.setFilter(QDir::Dirs|QDir::Files|QDir::NoDotAndDotDot);  //除了目录或文件，其他的过滤掉
-    import_dir.setSorting(QDir::Name|QDir::DirsFirst);  //优先显示名字
-    QFileInfoList list = import_dir.entryInfoList();
-    qDebug() << "list.size " << list.size();
-    for(int i=0;i<list.size();i++){
-        if(_bstop){
+    const QFileInfoList entries = sourceDir.entryInfoList();
+    for(const QFileInfo &fileInfo : entries){
+        if(isInterruptionRequested()){
             return;
         }
-        QFileInfo fileInfo = list.at(i);
-        bool bisDir = fileInfo.isDir();
-        if(bisDir){
-            if(_bstop){
-                return;
-            }
-            file_count++;
-            emit SigUpdateProgress(file_count);
-            QDir dist_dir(dist_path);
-            //构造子目的路径
-            QString sub_dist_path = dist_dir.absoluteFilePath(fileInfo.fileName());
-            qDebug()<< "sub_dist_path " << sub_dist_path;
-            //子目的目录
-            QDir sub_dist_dir(sub_dist_path);
-            //不能存在则创建
-            if(!sub_dist_dir.exists()){
-                bool ok = sub_dist_dir.mkpath(sub_dist_path);
-                if(!ok){
-                    qDebug()<< "sub_dist_dir mkpath failed"<< Qt::endl;
-                    continue;
+        const QString name = fileInfo.fileName();
+        QString relativePath = relativeParentPath.isEmpty()?name:QDir(relativeParentPath).filePath(name);
+        relativePath = QDir::fromNativeSeparators(QDir::cleanPath(relativePath));
+
+        const QString targetPath = QDir(dist_path).filePath(name);
+
+        if(fileInfo.isDir()){
+            const bool existedBefore = QDir(targetPath).exists();
+
+            if(!QDir().mkpath(targetPath)){
+                if(_firstError.isEmpty()){
+                    _firstError = QString("Cannot create directory: %1").arg(targetPath);
                 }
-            }
-            auto* item = new ProTreeItem(parent_item,fileInfo.fileName(),
-                                        sub_dist_path,root,TreeItemDir);
-            item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            item->setData(0,Qt::DecorationRole,QIcon(":/icon/dir.png"));
-            item->setData(0,Qt::ToolTipRole,sub_dist_path);
-            // QTreeWidgetItem* item = nullptr;
-            // QMetaObject::invokeMethod(_self, [&](){
-            //     item = new ProTreeItem(parent_item,fileInfo.fileName(),
-            //                           sub_dist_path,root,TreeItemDir);
-            //     item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            //     item->setData(0,Qt::DecorationRole,QIcon(":/icon/dir.png"));
-            //     item->setData(0,Qt::ToolTipRole,sub_dist_path);
-            // }, Qt::BlockingQueuedConnection);
-            CreateProTree(fileInfo.absoluteFilePath(),sub_dist_path,item,file_count,self,root,preItem);
-        }else{
-            if(_bstop){
-                return;
-            }
-            const QString & suffix = fileInfo.completeSuffix();
-            if(suffix != "png" && suffix != "jpeg" && suffix != "jpg"){
-                qDebug() << "suffix is not pic " << suffix << Qt::endl;
                 continue;
             }
-            file_count++;
-            emit SigUpdateProgress(file_count);
-            if(!needcopy){
-                continue;
+            if(!existedBefore){
+                _createdDirs.append(targetPath);
             }
 
-            QDir dist_dir(dist_path);
-            QString dist_file_path = dist_dir.absoluteFilePath(fileInfo.fileName());
-            if(!QFile::copy(fileInfo.absoluteFilePath(),dist_file_path)){
-                qDebug() << "file src to dist  copy failed" << Qt::endl;
-                continue;
-            }
-            auto* item = new ProTreeItem(parent_item,fileInfo.fileName(),
-                                        dist_file_path,root,TreeItemPic);
-            item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            item->setData(0,Qt::DecorationRole,QIcon(":/icon/pic.png"));
-            item->setData(0,Qt::ToolTipRole,dist_file_path);
-            // ProTreeItem* item = nullptr;
-            // QMetaObject::invokeMethod(_self, [&](){
-            //     item = new ProTreeItem(parent_item,fileInfo.fileName(),
-            //                           dist_file_path,root,TreeItemPic);
-            //     item->setData(0,Qt::DisplayRole,fileInfo.fileName());
-            //     item->setData(0,Qt::DecorationRole,QIcon(":/icon/pic.png"));
-            //     item->setData(0,Qt::ToolTipRole,dist_file_path);
-            // }, Qt::BlockingQueuedConnection);
-            if(preItem){
-                auto* pre_proitem = dynamic_cast<ProTreeItem*>(preItem);
-                pre_proitem->SetNextItem(item);
-            }
+            _entries.append({relativePath,name,targetPath,TreeItemDir});
 
-            item->SetPreItem(preItem);
-            preItem = item;
+            emit SigUpdateProgress(++_file_count);
+
+            CreateProTree(fileInfo.absoluteFilePath(),targetPath,relativePath);
+            continue;
         }
+
+        const QString suffix = fileInfo.suffix().toLower();
+        if(suffix != "png" && suffix != "jpg" && suffix != "jpeg"){
+            continue;
+        }
+        if(isInterruptionRequested()){
+            return;
+        }
+
+        const QString sourcePath = fileInfo.absoluteFilePath();
+        const QString absoluteTargetPath = QFileInfo(targetPath).absoluteFilePath();
+
+        if(QFileInfo(sourcePath).absoluteFilePath() != absoluteTargetPath){
+            if(!QFile::copy(sourcePath,absoluteTargetPath)){
+                if(_firstError.isEmpty()){
+                    _firstError = QString("Cannot copy file: %1").arg(sourcePath);
+                }
+                continue;
+            }
+            _createdFiles.append(absoluteTargetPath);
+        }
+
+        _entries.append({relativePath,name,absoluteTargetPath,TreeItemPic});
+        emit SigUpdateProgress(++_file_count);
     }
-    //parent_item->setExpanded(true);
-    //emit SigUpdateUi();
+}
+
+void ProTreeThread::RollbackCreatedFiles()
+{
+    for(auto iter = _createdFiles.crbegin();iter != _createdFiles.crend();++iter){
+        QFile::remove(*iter);
+    }
+
+    for(auto iter = _createdDirs.crbegin();iter != _createdDirs.crend();++iter){
+        QDir().rmdir(*iter);
+    }
 }
 
 void ProTreeThread::run()
 {
-    CreateProTree(_src_path,_dist_path,_parent_item,_file_count,_self,_root);
-    if(_bstop){
-        auto path = dynamic_cast<ProTreeItem*>(_root)->GetPath();
-        auto index = _self->indexOfTopLevelItem(_root);
-        delete _self->takeTopLevelItem(index);
-        QDir dir(path);
-        dir.removeRecursively();
+    _entries.clear();
+    _createdFiles.clear();
+    _createdDirs.clear();
+    _firstError.clear();
+    _file_count = 0;
+
+    CreateProTree(_src_path,_dist_path,QString());
+    if(isInterruptionRequested()){
+        RollbackCreatedFiles();
+        emit SigImportCanceled();
+        return;
+    }
+    if(!_firstError.isEmpty()){
+        RollbackCreatedFiles();
+        emit SigImportFailed(_firstError);
         return;
     }
 
-    emit SigFinishProgress(_file_count);
+    emit SigImportReady(_entries);
 }
 
 void ProTreeThread::SlotCancelProgress()
 {
-    this->_bstop = true;
+    requestInterruption();
 }

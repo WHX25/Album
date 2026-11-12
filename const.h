@@ -1,7 +1,16 @@
 #ifndef CONST_H
 #define CONST_H
 
-#endif // CONST_H
+#include <QString>
+#include <QMetaType>
+
+struct ImportEntry{
+    QString relativePath;
+    QString name;
+    QString targetPath;
+    int type;
+};
+Q_DECLARE_METATYPE(ImportEntry);
 
 enum TreeItemType{
     TreeItemPro = 1,  //条目
@@ -22,3 +31,5 @@ const int PROGRESS_WIDTH = 300;
 const int PROGRESS_MAX = 300;
 const int PREITEM_SIZE = 100;
 const int PREICON_SIZE = 90;
+
+#endif // CONST_H

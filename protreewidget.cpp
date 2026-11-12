@@ -4,7 +4,9 @@
 #include "removeprodialog.h"
 #include <QDir>
 #include <QMenu>
+#include <QHash>
 #include <QHeaderView>
+#include <QMessageBox>
 #include <QFileDialog>
 #include <QGuiApplication>
 
@@ -114,49 +116,50 @@ void ProTreeWidget::SlotDoubleClickItem(QTreeWidgetItem *item, int column)
 
 void ProTreeWidget::SlotImport()
 {
+
+    if(_thread_create_pro && _thread_create_pro->isRunning()){
+        return;
+    }
+    auto *rootItem = _right_btn_item;
+    if(!rootItem){
+        return;
+    }
+    const QString targetPath = dynamic_cast<ProTreeItem*>(rootItem)->GetPath();
+
     QFileDialog file_dialog;
     file_dialog.setFileMode(QFileDialog::Directory);
-    file_dialog.setWindowTitle("选择导入的文件夹");
-    QString path = "";
-    if(!_right_btn_item){
-        qDebug() << "_right_btn_item is empty" << Qt::endl;
-        path = QDir::currentPath();
-        return;
-    }
-    path = dynamic_cast<ProTreeItem*>(_right_btn_item)->GetPath();
-
-    file_dialog.setDirectory(path);
+    file_dialog.setWindowTitle(tr("选择导入的文件夹"));
+    file_dialog.setDirectory(targetPath);
     file_dialog.setViewMode(QFileDialog::Detail);
 
-    QStringList fileNames;
-    if(file_dialog.exec()){
-        fileNames = file_dialog.selectedFiles();
-    }
-    if(fileNames.length()<=0){
+    if(file_dialog.exec() != QDialog::Accepted || file_dialog.selectedFiles().isEmpty()){
         return;
     }
 
-    QString import_path = fileNames.at(0);
-    int file_count = 0;
+    const QString sourcePath = file_dialog.selectedFiles().first();
+    _importRootItem = rootItem;
+
     //创建模态对话框
-    _dialog_progress = new QProgressDialog(this);
+    _dialog_progress = new QProgressDialog(tr("正在导入图片..."),tr("取消"),0,0,this);
+    _dialog_progress->setWindowTitle(tr("请稍候"));
+    _dialog_progress->setFixedWidth(PROGRESS_WIDTH);
+    _dialog_progress->setWindowModality(Qt::WindowModal);
     //耗时操作放在线程中操作
-    _thread_create_pro = std::make_shared<ProTreeThread>(std::ref(import_path),std::ref(path),
-                                                        _right_btn_item,std::ref(file_count),
-                                                         this,_right_btn_item,nullptr);
+    _thread_create_pro = std::make_shared<ProTreeThread>(sourcePath,targetPath);
     //连接更新进度框操作
     connect(_thread_create_pro.get(),&ProTreeThread::SigUpdateProgress,this,&ProTreeWidget::SlotUpdateProgress);
 
-    connect(_thread_create_pro.get(),&ProTreeThread::SigFinishProgress,this,&ProTreeWidget::SlotFinishProgress);
+    connect(_thread_create_pro.get(),&ProTreeThread::SigImportReady,this,&ProTreeWidget::SlotImportReady);
+
+    connect(_thread_create_pro.get(),&ProTreeThread::SigImportFailed,this,&ProTreeWidget::SlotImportFailed);
+
+    connect(_thread_create_pro.get(),&ProTreeThread::SigImportCanceled,this,&ProTreeWidget::SlotImportCalceled);
 
     connect(_dialog_progress,&QProgressDialog::canceled,this,&ProTreeWidget::SlotCancelProgress);
 
     connect(this,&ProTreeWidget::SigCancelProgress,_thread_create_pro.get(),&ProTreeThread::SlotCancelProgress);
     _thread_create_pro->start();
 
-    _dialog_progress->setWindowTitle("Please wait...");
-    _dialog_progress->setFixedWidth(PROGRESS_WIDTH);
-    _dialog_progress->setRange(0,PROGRESS_MAX);
     _dialog_progress->exec();
 
 }
@@ -180,6 +183,10 @@ void ProTreeWidget::SlotSetActive()
 
 void ProTreeWidget::SlotClosePro()
 {
+    if (_thread_create_pro && _thread_create_pro->isRunning()) {
+        return;
+    }
+
     RemoveProDialog remove_pro_dialog;
     auto res = remove_pro_dialog.exec();
     if(res != QDialog::Accepted){
@@ -213,55 +220,181 @@ void ProTreeWidget::SlotClosePro()
 
 void ProTreeWidget::SlotUpdateProgress(int count)
 {
-    qDebug() << "count is " << count;
-    if(!_dialog_progress){
-        qDebug() << "dialog_progress is empty!!!";
-        return;
+    if(_dialog_progress){
+        _dialog_progress->setLabelText(tr("正在导入图片，已处理 %1 项...").arg(count));
     }
-    _dialog_progress->setValue(count%PROGRESS_MAX);
 }
 
 void ProTreeWidget::SlotCancelProgress()
 {
-    emit SigCancelProgress();
+    if(_thread_create_pro && _thread_create_pro->isRunning()){
+        emit SigCancelProgress();
+
+        if(_dialog_progress){
+            _dialog_progress->setLabelText(tr("正在取消..."));
+        }
+    }
+}
+
+void ProTreeWidget::SlotImportReady(QVector<ImportEntry> entries)
+{
+    if(!_importRootItem){
+        return;
+    }
+
+    QHash<QString,QTreeWidgetItem*> directoryItems;
+    directoryItems.insert(QString(),_importRootItem);
+
+    auto *rootProItem = dynamic_cast<ProTreeItem*>(_importRootItem);
+    ProTreeItem* previousPic = rootProItem ? rootProItem->GetLastPicChild():nullptr;
+
+    for(const ImportEntry &entry : entries){
+        const QString relativePath = QDir::cleanPath(entry.relativePath);
+
+        QString parentPath = QFileInfo(relativePath).path();
+        if(parentPath == "."){
+            parentPath.clear();
+        }
+
+        QTreeWidgetItem *parentItem = directoryItems.value(parentPath,_importRootItem);
+
+        auto *item = new ProTreeItem(parentItem,entry.name,entry.targetPath,_importRootItem,entry.type);
+
+        item->setData(0,Qt::DisplayRole,entry.name);
+        item->setData(0,Qt::DecorationRole,entry.type==TreeItemDir?QIcon(":/icon/dir.png"):QIcon(":/icon/pic.png"));
+        item->setData(0,Qt::ToolTipRole,entry.relativePath);
+
+        if(entry.type == TreeItemDir){
+            directoryItems.insert(relativePath,item);
+        }else if(entry.type == TreeItemPic){
+            auto *picItem = static_cast<ProTreeItem*>(item);
+
+            if(previousPic){
+                previousPic->SetNextItem(picItem);
+                picItem->SetPreItem(previousPic);
+            }
+
+            previousPic = picItem;
+        }
+    }
+
+    _importRootItem->setExpanded(true);
+    _importRootItem = nullptr;
+
     if(_dialog_progress){
-        delete _dialog_progress;
+        _dialog_progress->hide();
+        _dialog_progress->deleteLater();
         _dialog_progress = nullptr;
     }
 }
 
-void ProTreeWidget::SlotFinishProgress()
+void ProTreeWidget::SlotImportFailed(QString message)
 {
-    _dialog_progress->setValue(PROGRESS_MAX);
-    _dialog_progress->deleteLater();
+    _importRootItem = nullptr;
+
+    if(_dialog_progress){
+        _dialog_progress->hide();
+        _dialog_progress->deleteLater();
+        _dialog_progress = nullptr;
+    }
+
+    QMessageBox::warning(this,tr("导入失败"),message);
 }
+
+void ProTreeWidget::SlotImportCalceled()
+{
+    _importRootItem = nullptr;
+
+    if(_dialog_progress){
+        _dialog_progress->hide();
+        _dialog_progress->deleteLater();
+        _dialog_progress = nullptr;
+    }
+}
+
+
 
 void ProTreeWidget::SlotUpOpenProgress(int count)
 {
-    if(!_open_progressdlg){
-        return;
+    if(_open_progressdlg){
+        _open_progressdlg->setLabelText(tr("正在处理目录，已处理 %1 项").arg(count));
     }
-
-    _open_progressdlg->setValue(count%PROGRESS_MAX);
 }
 
 void ProTreeWidget::SlotCancelOpenProgress()
 {
-    emit SigCancelOpenProgress();
+    if(_thread_open_pro && _thread_open_pro->isRunning()){
+        emit SigCancelOpenProgress();
+    }
+}
+
+void ProTreeWidget::SlotOpenReady(QVector<ImportEntry> entries)
+{
+    const QString projectPath = _openingPath;
+    const QString projectName = QFileInfo(projectPath).fileName();
+
+    auto *rootItem = new ProTreeItem(this,projectName,projectPath,TreeItemPro);
+
+    rootItem->setData(0,Qt::DisplayRole,projectName);
+    rootItem->setData(0,Qt::DecorationRole,QIcon(":/icon/dir.png"));
+    rootItem->setData(0,Qt::ToolTipRole,projectPath);
+
+    QHash<QString,QTreeWidgetItem*> directoryItems;
+    directoryItems.insert(QString(),rootItem);
+
+    ProTreeItem *previousPic = nullptr;
+
+    for(const ImportEntry &entry : entries){
+        const QString relativePath = QDir::cleanPath(entry.relativePath);
+
+        QString parentPath = QFileInfo(relativePath).path();
+        if(parentPath == "."){
+            parentPath.clear();
+        }
+        QTreeWidgetItem *parentItem = directoryItems.value(parentPath,rootItem);
+
+        auto *item = new ProTreeItem(parentItem,entry.name,entry.targetPath,rootItem,entry.type);
+
+        item->setData(0,Qt::DisplayRole,entry.name);
+        item->setData(0,Qt::DecorationRole,entry.type==TreeItemDir?QIcon(":/icon/dir.png"):QIcon(":/icon/pic.png"));
+        item->setData(0,Qt::ToolTipRole,entry.targetPath);
+
+        if(entry.type == TreeItemDir){
+            directoryItems.insert(relativePath,item);
+        }else if(entry.type == TreeItemPic){
+            auto *picItem = static_cast<ProTreeItem*>(item);
+            if(previousPic){
+                previousPic->SetNextItem(picItem);
+                picItem->SetPreItem(previousPic);
+            }
+
+            previousPic = item;
+        }
+    }
+
+    rootItem->setExpanded(true);
+    _openingPath.clear();
+
     if(_open_progressdlg){
-        delete _open_progressdlg;
+        _open_progressdlg->hide();
+        _open_progressdlg->deleteLater();
         _open_progressdlg = nullptr;
     }
 }
 
-void ProTreeWidget::SlotFinishOpenProgress()
+void ProTreeWidget::SlotOpenCanceled()
 {
-    if(!_open_progressdlg){
-        return;
+    _set_path.remove(_openingPath);
+    _openingPath.clear();
+
+    if(_open_progressdlg){
+        _open_progressdlg->hide();
+        _open_progressdlg->deleteLater();
+        _open_progressdlg = nullptr;
     }
-    _open_progressdlg->setValue(PROGRESS_MAX);
-    _open_progressdlg->deleteLater();
 }
+
+
 
 void ProTreeWidget::SlotSlideShow()
 {
@@ -288,30 +421,35 @@ void ProTreeWidget::SlotSlideShow()
 
 void ProTreeWidget::SlotOpenPro(const QString &path)
 {
-    if(_set_path.find(path) != _set_path.end()){
+    if((_thread_open_pro && _thread_open_pro->isRunning()) || _set_path.contains(path)){
         return;
     }
 
+    _openingPath = path;
     _set_path.insert(path);
-    int file_count = 0;
-    QDir pro_path(path);
-    QString proname = pro_path.dirName();
-    _thread_open_pro = std::make_shared<OpenTreeThread>(path,file_count,this,nullptr);
+
+    _thread_open_pro = std::make_shared<OpenTreeThread>(path);
 
     _open_progressdlg = new QProgressDialog(this);
+    _open_progressdlg->setWindowTitle(tr("正在打开项目"));
+    _open_progressdlg->setLabelText(tr("正在扫描目录..."));
+    _open_progressdlg->setCancelButtonText(tr("取消"));
+    _open_progressdlg->setRange(0,0);
+    _open_progressdlg->setMinimumDuration(0);
+    _open_progressdlg->setFixedWidth(PROGRESS_WIDTH);
+    _open_progressdlg->setWindowModality(Qt::WindowModal);
 
     connect(_thread_open_pro.get(),&OpenTreeThread::SigUpdateProgress,this,&ProTreeWidget::SlotUpOpenProgress);
 
-    connect(_thread_open_pro.get(),&OpenTreeThread::SigFinishProgress,this,&ProTreeWidget::SlotFinishOpenProgress);
+    connect(_thread_open_pro.get(),&OpenTreeThread::SigOpenReady,this,&ProTreeWidget::SlotOpenReady);
+
+    connect(_thread_open_pro.get(),&OpenTreeThread::SigOpenCanceled,this,&ProTreeWidget::SlotOpenCanceled);
 
     connect(_open_progressdlg,&QProgressDialog::canceled,this,&ProTreeWidget::SlotCancelOpenProgress);
 
     connect(this,&ProTreeWidget::SigCancelOpenProgress,_thread_open_pro.get(),&OpenTreeThread::SlotCancelProgress);
-    _thread_open_pro->start();
 
-    _open_progressdlg->setWindowTitle("Please wait...");
-    _open_progressdlg->setFixedWidth(PROGRESS_WIDTH);
-    _open_progressdlg->setRange(0,PROGRESS_MAX);
+    _thread_open_pro->start();
     _open_progressdlg->exec();
 }
 

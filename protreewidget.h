@@ -19,6 +19,7 @@ public:
     void AddProToTree(const QString& name,const QString& path);
 private:
     QSet<QString> _set_path;
+    QString _openingPath;
     QAction * _action_import;
     QAction * _action_setstart;
     QAction * _action_closepro;
@@ -27,6 +28,7 @@ private:
     QTreeWidgetItem * _right_btn_item;
     QTreeWidgetItem * _active_item;
     QTreeWidgetItem * _selected_item;
+    QTreeWidgetItem * _importRootItem = nullptr;
     QProgressDialog * _dialog_progress;
     QProgressDialog * _open_progressdlg;
     std::shared_ptr<ProTreeThread> _thread_create_pro;
@@ -47,11 +49,14 @@ private slots:
     void SlotClosePro();
     void SlotUpdateProgress(int count);
     void SlotCancelProgress();
-    void SlotFinishProgress();
+    void SlotImportReady(QVector<ImportEntry> entries);
+    void SlotImportFailed(QString message);
+    void SlotImportCalceled();
 
     void SlotUpOpenProgress(int count);
     void SlotCancelOpenProgress();
-    void SlotFinishOpenProgress();
+    void SlotOpenReady(QVector<ImportEntry> entries);
+    void SlotOpenCanceled();
     void SlotSlideShow();
 public slots:
     void SlotOpenPro(const QString& path);
