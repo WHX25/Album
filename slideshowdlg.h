@@ -8,6 +8,7 @@ namespace Ui {
 class SlideShowDlg;
 }
 
+class QCloseEvent;
 class SlideShowDlg : public QDialog
 {
     Q_OBJECT
@@ -21,6 +22,8 @@ private:
     Ui::SlideShowDlg *ui;
     QTreeWidgetItem* _first_item;
     QTreeWidgetItem* _last_item;
+protected:
+    void closeEvent(QCloseEvent* event) override;
 public slots:
     void SlotSlideNext();
     void SlotSlidePre();

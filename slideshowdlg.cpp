@@ -52,6 +52,12 @@ SlideShowDlg::~SlideShowDlg()
     delete ui;
 }
 
+void SlideShowDlg::closeEvent(QCloseEvent *event)
+{
+    ui->picAnimation->Stop();
+    QDialog::closeEvent(event);
+}
+
 void SlideShowDlg::SlotSlideNext()
 {
     ui->picAnimation->SlideNext();
