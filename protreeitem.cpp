@@ -81,20 +81,17 @@ ProTreeItem *ProTreeItem::GetFirstPicChild()
         return nullptr;
     }
 
-    for(int i=0;i<child_count-1;i++){
-        auto* first_child = this->child(i);
-        auto* first_tree_item = dynamic_cast<ProTreeItem*>(first_child);
-        int item_type = first_tree_item->type();
-        if(item_type == TreeItemPic){
+    for(int i=0;i<child_count;i++){
+        auto* first_tree_item = dynamic_cast<ProTreeItem*>(this->child(i));
+        if(!first_tree_item){
+            continue;
+        }
+        if(first_tree_item->type() == TreeItemPic){
             return first_tree_item;
         }
 
-        first_child= first_tree_item->GetLastPicChild();
-        if(!first_child){
-            continue;
-        }
-        first_tree_item = dynamic_cast<ProTreeItem*>(first_child);
-        return first_tree_item;
+        auto *first_child= first_tree_item->GetFirstPicChild();
+        if(first_child) return first_child;
     }
     return nullptr;
 }
